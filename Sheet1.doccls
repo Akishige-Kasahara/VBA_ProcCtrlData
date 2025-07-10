@@ -1,0 +1,378 @@
+﻿Option Explicit
+
+Const DEVICE_SIZE = 4                  'デバイス点数
+Const LOGGING_MAXCNT = 30000               'ロギング数
+
+Private oActUtlType As ActUtlType64Lib.ActUtlType64
+Private oActSupportMsg As ActSupportMsg64Lib.ActSupportMsg64
+Dim lResult As Long
+Dim sMsg    As String
+
+Dim bOpenFlg As Boolean                 'オープンフラグ
+Dim ErrMsg As String                    'エラーメッセージ
+
+'/****************************************************************************/
+'/*  <SUB>   Init                                                            */
+'/*                                                                          */
+'/*  MITSUBISHI ELECTRIC CORPORATION                                         */
+'/****************************************************************************/
+Public Sub Init()
+    
+    On Error GoTo GET_ERR
+    Set oActUtlType = New ActUtlType64Lib.ActUtlType64
+        
+    On Error GoTo GET_ERR2
+    Set oActSupportMsg = New ActSupportMsg64Lib.ActSupportMsg64
+    
+    Exit Sub
+    
+GET_ERR2:
+    MsgBox ("ActSupportMsg GetObject error.")
+    
+    Exit Sub
+GET_ERR:
+    MsgBox ("ActUtlType GetObject error.")
+
+End Sub
+
+'/****************************************************************************/
+'/*  <MACRO>    LoggingStart_Click                                           */
+'/*  [[[STARTボタン押下時の処理]]]                                           */
+'/****************************************************************************/
+Sub LoggingStart_Click()
+    Dim lRet As Long                    '戻り値
+    Dim lp As Long                      'ワークカウンタ
+    Dim ws As Worksheet
+    
+    
+    On Error GoTo Error 'エラー処理ルーチン先設定
+    
+    Set ws = Worksheets("Main1")
+    
+    '論理局番をActUtlTypeコントロールのプロパティに設定する
+    lp = Val(ws.Range("AB1").Value)
+    'LogicalStationNumber
+    oActUtlType.ActLogicalStationNumber = lp
+    
+    'Password
+    oActUtlType.ActPassword = ""
+    lRet = oActUtlType.Open
+                
+    'メソッドの実行結果を判定
+    If (lRet = 0) Then
+        '正常終了の場合
+        bOpenFlg = True                                         'オープンフラグにオープン済みを設定する
+        
+        ShowUserForm1
+        
+        'ログ取得を起動する
+        StartLog
+    Else
+        '異常終了の場合
+        'オープンフラグを未オープンにする
+        bOpenFlg = False
+        'エラーコードに対応したトラブルシュートメッセージを表示する。
+        ErrorViewMessage (lRet)
+        Exit Sub
+
+    End If
+        
+Exit Sub
+
+Error:  '例外処理
+    '回線のクローズを行なう。
+    lRet = Worksheets("Main1").oActUtlType.Close()
+    'エラーを表示する。
+    MsgBox Error$(Err), vbCritical
+    End
+
+End Sub
+
+'/****************************************************************************/
+'/*  <MACRO>    LoggingStop_Click                                            */
+'/*  [[[STOPボタン押下時の処理]]]                                            */
+'/****************************************************************************/
+Sub LoggingStop_Click()
+    Dim lRet As Long                    '戻り値
+        
+    Dim szDev1 As String  'デバイス名
+    Dim lVal(DEVICE_SIZE) As Long       'デバイス値（DEVICE_SIZEで設定）
+    
+    szDev1 = "M1408"
+    
+    'トリガのリセット処理
+    'ReadDeviceBlockメソッドを実行する⇒M1408（トリガフラグの読み出し)
+    lRet = oActUtlType.ReadDeviceBlock(szDev1, 1, lVal(0))
+    If (lRet = 0) Then
+        lVal(0) = 0
+        'WriteDeviceBlockメソッドを実行する⇒M1408, M1409をOFFする
+        lRet = oActUtlType.WriteDeviceBlock(szDev1, 1, lVal(0))
+            
+    End If
+        
+        
+    bOpenFlg = False                    'オープンフラグを未オープンにする
+                
+    Application.Wait [Now()] + 1000 / 86400000
+    
+    '通信をCloseする
+    lRet = oActUtlType.Close()
+        
+    
+    UserForm1.Label1.Caption = "ロギングを終了しました。"
+    
+    
+    CloseUserForm1
+
+    Worksheets("Main1").Range("G13").Select
+
+End Sub
+
+'/****************************************************************************/
+'/*  <MACRO>    StartLog                                                     */
+'/*  [[[データ取得処理]]]                                                    */
+'/****************************************************************************/
+Sub StartLog()
+    Dim lRet As Long                    '戻り値
+    Dim lLogMax As Long                 '最大ロギング数
+    Dim szDev1 As String, szDev2 As String  'デバイス名
+    Dim lCnt As Long                    '点数
+    Dim lMemCnt As Long                 'カウンタ値のメモ
+    Dim lVal(DEVICE_SIZE) As Long       'デバイス値（DEVICE_SIZEで設定）
+    Dim iTrgFlag As Integer
+    Dim i As Integer
+    Dim ws As Worksheet
+    Dim aArry As Variant, bArry As Variant, meanArry As Variant
+    Dim bResult As Boolean
+    
+    Dim dUl As Double                   '上限設定値
+    Dim dLl As Double                   '下限設定値
+    Dim dMean As Double                 '荷重ピーク平均値
+    Dim lRow As Long                    '平均計算用行数を取得
+    Dim dSd As Double                   '標準偏差
+    Dim dCpk As Double                  'Cpk
+    
+    On Error GoTo Error 'エラー処理ルーチン先設定
+    
+    Set ws = Worksheets("Main1")
+    
+    'オープンフラグを判定
+    Do While bOpenFlg
+    
+        DoEvents
+        
+        UserForm1.Label1.Caption = "ロギング中です..."
+        
+        'オープン済みの場合
+        lLogMax = LOGGING_MAXCNT                        'ロギング数を取得する
+        szDev1 = "M1408"
+        szDev2 = "d3100"                                   'デバイス名をセットする
+        lCnt = DEVICE_SIZE                              '点数を取得する
+        
+        iTrgFlag = 0
+        
+        Do While bOpenFlg And iTrgFlag = 0
+            
+            DoEvents
+            
+            If bOpenFlg Then
+                'ReadDeviceBlockメソッドを実行する⇒M1408（トリガフラグの読み出し)
+                lRet = oActUtlType.ReadDeviceBlock(szDev1, 1, lVal(0))
+                If (lRet = 0) Then
+                    iTrgFlag = lVal(0) And 1 ' M1408の取出し
+        
+                Else
+                    '読み出しが異常完了した場合
+                    'エラーコードに対応したトラブルシュートメッセージを表示する。
+                    ErrorViewMessage (lRet)
+                    Exit Sub
+                End If
+            End If
+        Loop
+    
+        If iTrgFlag = 1 Then
+            'ReadDeviceBlockメソッドを実行する⇒ログデータ取得
+            lRet = oActUtlType.ReadDeviceBlock(szDev2, lCnt, lVal(0))
+            If (lRet = 0) Then
+            
+                Application.DisplayAlerts = False
+
+                With ws
+                    '正常終了の場合
+                    
+                    lMemCnt = .Cells(13, 2).Value '最新のカウント値を格納
+                    
+                    If lMemCnt <> lVal(0) Then  'カウント値に違いがあったらデータを取り込む
+                    
+                        ReDim aArry(DEVICE_SIZE + 3)       'aArry：PLCからの読み込み用
+                        
+                        aArry(0) = Date$ & " " & Time$  'システム時間を設定する
+                        
+                        '取得したデバイス値をセルに設定する
+                        'aArry(1)<=lVal(0)：D3100　カウンタ
+                        aArry(1) = CInt("&H" + Hex$(lVal(0)))
+                        'aArry(2)<=lVal(1)：D3101　荷重ピーク値
+                        aArry(2) = CInt("&H" + Hex$(lVal(1))) / 100
+                        
+                        'aArry(3)<=lVal(2)：D3102　上限設定値
+                        aArry(3) = CInt("&H" + Hex$(lVal(2))) / 100
+                        'aArry(4)<=lVal(3)：D3103　下限設定値
+                        aArry(4) = CInt("&H" + Hex$(lVal(3))) / 100
+                        
+                        
+                        '荷重ピーク平均の計算
+                        
+                        lRow = .Cells(Rows.Count, 3).End(xlUp).Row
+                        
+                        If lRow > 12 Then
+                            ReDim meanArry(1 To lRow - 12)
+                        
+                            meanArry = Range(.Cells(13, 3), .Cells(lRow, 3))
+                        
+                            dMean = WorksheetFunction.Average(meanArry)
+                        
+                            
+                            .Cells(7, 2) = dMean
+                        End If
+                                                
+                        ReDim bArry(lLogMax, 4) ' bArry：データエリアコピー用配列
+
+                        'セルデータを１行下にずらした後、最新のデータを設定する ：時刻、カウンタ、ピーク、5LPメモ、アラームコメント
+                        bArry = .Range(.Cells(13, 1), .Cells(lLogMax + 13, 7)).Value
+                        .Range(.Cells(14, 1), .Cells(lLogMax + 14, 7)) = bArry
+                        .Range(.Cells(13, 1), .Cells(13, 7)) = aArry
+                        
+                        ' グラフデータのエリアを動的取得する場合は↓を有効にする
+                        '
+                        ' If lRow Mod 20 = 0 Then
+                        '    bResult = UpdateChart("Main1", "Main1", 13, 2)      'グラフの更新
+                        ' End If
+                        
+                    End If
+                    
+                End With
+            
+                'トリガのリセット処理
+                'ReadDeviceBlockメソッドを実行する⇒M1408（トリガフラグの読み出し)
+                lRet = oActUtlType.ReadDeviceBlock(szDev1, 1, lVal(0))
+                If (lRet = 0) Then
+                    lVal(0) = 3     'M1409（ロギング完了）をONする
+                    'WriteDeviceBlockメソッドを実行する⇒M1409（ロギング完了をONする)
+                    lRet = oActUtlType.WriteDeviceBlock(szDev1, 1, lVal(0))
+            
+                Else
+                    '読み出しが異常した場合
+                    'エラーコードに対応したトラブルシュートメッセージを表示する。
+                    ErrorViewMessage (lRet)
+                    Exit Sub
+                End If
+                Application.DisplayAlerts = True
+
+            End If
+        End If
+    
+        Application.DisplayAlerts = True
+    Loop
+
+Exit Sub
+
+Error:  '例外処理
+    Worksheets("Main1").Range("G13").Select
+    
+    '回線のクローズを行なう。
+    lRet = oActUtlType.Close
+    'エラーを表示する。
+    MsgBox Error$(Err), vbCritical
+    End
+
+End Sub
+
+
+'/****************************************************************************/
+'/*  <MACRO>    ViewErrorMessage                                     　　　　*/
+'/*  [[[エラーメッセージを表示する処理]]]                                      */
+'/****************************************************************************/
+Sub ErrorViewMessage(rtncode)
+    Dim lRet As Long            '戻り値
+    Dim szMessage As String     'トラブルシュートメッセージ
+    
+    'サポートコントロールによりトラブルシュートメッセージを取得する。
+    'GetErrorMessageを実行する。
+    lRet = oActSupportMsg.GetErrorMessage(rtncode, szMessage)
+    'GetErrorMessageに成功した場合は、トラブルシュートメッセージをメッセージボックス
+    'に表示する。
+    If lRet = 0 Then
+        'GetErrorMessageに成功した場合
+        'トラブルシュートメッセージを表示する。
+        MsgBox szMessage, vbExclamation
+    Else
+        'GetErrorMessageに失敗した場合
+        'エラーコードを表示する。
+        MsgBox "Errorcode = " & Hex(lRet) & "[Hex]"
+    End If
+    
+    Worksheets("Main1").Range("G13").Select
+    
+End Sub
+
+'_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/
+'
+' UpdateChart()
+'
+' ロギンググラフの参照範囲をアップデートする
+'
+'_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/
+
+Function UpdateChart(ByVal wsName As String, ByVal wsData As String, ByVal targetRow As Integer, ByVal targetClmn As Integer) As Boolean
+
+    Dim ws1 As Worksheet
+    Dim ws2 As Worksheet
+    Dim LastCell As Range
+    Dim i As Integer
+
+    Set ws1 = Worksheets(wsName)
+    Set ws2 = Worksheets(wsData)
+    
+    Set LastCell = ws2.Cells(Rows.Count, targetClmn).End(xlUp)
+    
+
+    With ws1.ChartObjects(1).Chart
+        
+        '系統1（荷重ピーク）
+        '系統2（上限設定値）
+        '系統3（下限設定値）
+        
+        For i = 1 To .SeriesCollection.Count
+
+
+            .SeriesCollection(i).Formula = _
+                    "=SERIES(" & ws2.Cells(targetRow - 1, targetClmn + i).Address(External:=True) & "," & _
+                    ws2.Range(ws2.Cells(targetRow, targetClmn), LastCell.Offset(0, 0)).Address(External:=True) & "," & _
+                    ws2.Range(ws2.Cells(targetRow, targetClmn + i), LastCell.Offset(0, i)).Address(External:=True) & "," & _
+                    i & ")"
+        Next i
+        
+    End With
+    
+    ws1.Activate
+    ws1.ChartObjects(1).Select
+    
+    UpdateChart = True
+    
+End Function
+
+
+
+Private Sub ShowUserForm1()
+    '処理中フォームの表示(モードレス)
+    UserForm1.Show vbModeless
+End Sub
+
+Private Sub CloseUserForm1()
+    '処理中フォームを消す
+    Unload UserForm1
+End Sub
+
+
+
+

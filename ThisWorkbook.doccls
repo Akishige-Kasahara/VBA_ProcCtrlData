@@ -1,0 +1,32 @@
+﻿Option Explicit
+
+
+'/****************************************************************************/
+'/*  <SUB>   Workbook_Deactivate                                             */
+'/*                                                                          */
+'/*  MITSUBISHI ELECTRIC CORPORATION                                         */
+'/****************************************************************************/
+Private Sub Workbook_Deactivate()
+
+    Application.StatusBar = ""
+
+End Sub
+
+'/****************************************************************************/
+'/*  <SUB>   Workbook_Open                                                   */
+'/*                                                                          */
+'/*  MITSUBISHI ELECTRIC CORPORATION                                         */
+'/****************************************************************************/
+Private Sub Workbook_Open()
+    Dim Msg, Style, Title, Ctxt, Response, MyString
+
+    Worksheets("Main1").Activate
+    
+    Application.ScreenUpdating = False
+    
+    Sheet1.Visible = xlSheetVisible
+    Sheet1.Select
+    Sheet1.Init
+
+    Application.ScreenUpdating = True
+End Sub
